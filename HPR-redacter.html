@@ -1,0 +1,1032 @@
+<!doctype html>
+<html lang="sv">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>HPR-redacter (enskild firma, streaming/worker)</title>
+
+  <!--
+  ─────────────────────────────────────────────────────────────────────────────
+  HPR-maskning – lokalt i webbläsaren (ingen uppladdning)
+
+  Vad är detta?
+  - En enkel sida som du kan spara på din dator och öppna i valfri webbläsare.
+  - Du väljer en HPR-fil (XML). Sidan visar först VAD den tänker maska.
+  - När du klickar "Skapa rensad fil" får du en ny fil med personidentifierare
+    borttagna/ersatta, samt en maskningsrapport (JSON) som visar exakt vad som
+    ändrades.
+
+  Varför finns detta?
+  - HPR-filer innehåller ofta produktionsdata + koordinater (nyttigt för markägaren)
+    men kan också innehålla operatörsnamn/login, e-post, och ibland entreprenörens
+    personnamn (t.ex. enskild firma). Detta verktyg hjälper till att minimera
+    spridning av tredje mans personuppgifter innan utlämning.
+
+  Viktigt att veta:
+  - Allt sker lokalt på din dator. Sidan gör inga nätverksanrop.
+  - Sidan laddar inga externa script eller bibliotek.
+  - Analys och maskning sker i en Web Worker med strömmande parser (SAX-liknande).
+  - Resultatet sparas som UTF-8 (standard). Den ursprungliga filen ändras inte.
+
+  Rekommenderat arbetssätt:
+  1) Välj HPR-fil
+  2) Läs "Förhandsgranskning": där ser du exakt vilka fält som kommer maskas
+  3) Justera kryssrutor vid behov
+  4) Skapa rensad fil + spara rapporten
+  5) Skicka den rensade filen till markägaren
+
+  Begränsningar:
+  - Detta är inte juridisk rådgivning.
+  - Maskning är en riskminimering, inte en garanti för att ingen kan identifieras
+    via kontext (t.ex. datum/objekt/organisation). Rapporten hjälper er att visa
+    att ni faktiskt tagit bort direkta identifierare.
+  - Detektion av "enskild firma" bygger på enkla heuristiker (t.ex. personnummer
+    i BusinessID och avsaknad av "AB" i företagsnamn).
+  ─────────────────────────────────────────────────────────────────────────────
+  -->
+
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; max-width: 1100px; margin: 38px auto; padding: 0 22px; background: #f7f7f4; color: #1b1b1b; }
+    h1 { margin: 0 0 6px; font-size: 2rem; }
+    .muted { opacity: 0.6; }
+    .card { border: 1px solid rgba(0,0,0,0.08); border-radius: 18px; padding: 22px; margin: 22px 0; background: #ffffff; }
+    .row { display: flex; gap: 18px; flex-wrap: wrap; align-items: center; }
+    label { display: inline-flex; gap: 8px; align-items: center; }
+    input[type="file"] { position: absolute; left: -9999px; }
+    .upload-card { display: flex; align-items: center; gap: 18px; padding: 18px; border-radius: 16px; border: 1px dashed rgba(0,0,0,0.2); background: #fbfbf8; }
+    .upload-btn {
+      display: inline-flex; align-items: center; gap: 10px;
+      padding: 14px 18px; border-radius: 14px; border: 1px solid rgba(0,0,0,0.2);
+      background: #1f2a1f; color: #f6f6f0; cursor: pointer; font-weight: 600;
+      box-shadow: 0 6px 20px rgba(0,0,0,0.08);
+    }
+    .upload-btn:hover { background: #243224; }
+    .upload-hint { font-size: 0.95rem; color: rgba(0,0,0,0.6); }
+    button {
+      padding: 11px 16px; border-radius: 12px; border: 1px solid rgba(0,0,0,0.18);
+      background: #f1f1ed; cursor: pointer;
+    }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .pill { display: inline-block; padding: 2px 10px; border-radius: 999px; border: 1px solid rgba(0,0,0,0.12); color: rgba(0,0,0,0.6); background: #f6f6f1; }
+    .grid { display: grid; grid-template-columns: 1fr; gap: 12px; }
+    @media (min-width: 980px) { .grid { grid-template-columns: 1fr 1fr; } }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { border-bottom: 1px solid rgba(0,0,0,0.1); padding: 10px 8px; vertical-align: top; }
+    th { text-align: left; }
+    code { padding: 2px 6px; border-radius: 8px; background: rgba(0,0,0,0.06); }
+    pre { white-space: pre-wrap; border-radius: 12px; padding: 12px; border: 1px solid rgba(0,0,0,0.12); background: rgba(0,0,0,0.03); }
+    .small { font-size: 0.92rem; }
+    .warn { border-left: 4px solid rgba(220, 140, 0, 0.7); padding-left: 10px; }
+    .deemph { color: rgba(0,0,0,0.55); font-size: 0.9rem; }
+    .card.tight { padding: 16px; }
+    .section-title { letter-spacing: 0.01em; }
+    .spacer-xl { height: 18px; }
+    .path { word-break: break-all; overflow-wrap: anywhere; }
+    .info-block { font-size: 0.9rem; color: rgba(0,0,0,0.6); }
+    .info-block a { color: #163629; text-decoration: none; border-bottom: 1px solid rgba(22, 54, 41, 0.3); }
+    .info-block a:hover { border-bottom-color: rgba(22, 54, 41, 0.6); }
+    .cta {
+      background: #163629;
+      border-color: #0f2a20;
+      color: #f6f6f0;
+      box-shadow: 0 10px 28px rgba(22, 54, 41, 0.22);
+    }
+    .pulse {
+      position: relative;
+      animation: pulse 1.6s ease-in-out infinite;
+    }
+    @keyframes pulse {
+      0% { box-shadow: 0 0 0 0 rgba(22, 54, 41, 0.35); }
+      70% { box-shadow: 0 0 0 12px rgba(22, 54, 41, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(22, 54, 41, 0); }
+    }
+  </style>
+</head>
+
+<body>
+  <h1>HPR-redacter</h1>
+  <div class="muted small">
+    Lokal HPR-maskning av tredjepartsuppgifter (enskild firma), utan uppladdning.
+  </div>
+
+  <div class="card">
+    <div class="upload-card">
+      <input id="file" type="file" accept=".hpr,.xml,application/xml,text/xml" />
+      <label class="upload-btn" for="file">Välj HPR-fil</label>
+      <div>
+        <div class="upload-hint">Lokal fil, inget laddas upp.</div>
+        <div class="upload-hint">Stäng gärna av din internetuppkoppling under körningen om du vill känna dig extra trygg.</div>
+      </div>
+    </div>
+
+    <div class="spacer-xl"></div>
+
+    <div class="row">
+      <span class="pill" id="fileInfo">Ingen fil vald</span>
+      <span class="pill deemph" id="encInfo">Encoding: –</span>
+      <span class="pill deemph" id="nsInfo">Namespace: –</span>
+    </div>
+
+    <div class="spacer-xl"></div>
+
+    <div class="grid">
+      <div class="card tight" style="margin:0;">
+        <strong class="section-title">Maskningsval</strong>
+        <div class="small deemph" style="margin-top:8px;">
+          Förhandsgranskningen uppdateras när du ändrar valen.
+        </div>
+        <div style="height:12px;"></div>
+
+        <div class="row">
+          <label><input type="checkbox" id="optOperators" checked> Operatör (OperatorUserID + ContactInformation)</label>
+          <label><input type="checkbox" id="optAuthors" checked> Ta bort <code>modificationAuthor</code>-attribut</label>
+          <label><input type="checkbox" id="optEmails" checked> Maska e-post var som helst</label>
+        </div>
+
+        <div style="height:8px;"></div>
+
+        <div class="row">
+          <label><input type="checkbox" id="optContractorSole" checked> Entreprenör/ägare: maska endast om enskild firma (ej AB)</label>
+          <label><input type="checkbox" id="optBusinessId" checked> Maska <code>BusinessID</code> i dessa block</label>
+        </div>
+
+        <div style="height:8px;"></div>
+
+        <div class="row">
+          <label>
+            Ersättningsstil:
+            <select id="optStyle">
+              <option value="empty" selected>Töm värden (rekommenderat)</option>
+              <option value="redacted">Skriv [REDACTED] (tydligt i filen)</option>
+            </select>
+          </label>
+        </div>
+
+        <div style="height:12px;"></div>
+
+        <div class="warn small deemph">
+          Tips: Om någon är orolig för “vad som faktiskt togs bort”, spara maskningsrapporten (JSON).
+        </div>
+      </div>
+
+      <div class="card tight" style="margin:0;">
+        <strong class="section-title">Åtgärder</strong>
+        <div class="small deemph" style="margin-top:8px;">
+          Först måste filen analyseras. Efter analys kan du skapa rensad fil och spara rapport.
+        </div>
+        <div style="height:12px;"></div>
+
+        <div class="row">
+          <button id="btnAnalyze" disabled>Analysera & uppdatera förhandsgranskning</button>
+          <button id="btnRedact" disabled>Skapa rensad fil</button>
+          <button id="btnReport" disabled>Spara rapport (JSON)</button>
+        </div>
+
+        <div style="height:12px;"></div>
+        <div class="small deemph">
+          Rensad fil får suffix <code>.redacted</code>. Rapport får suffix <code>.redaction-report.json</code>.
+        </div>
+        <div style="height:10px;"></div>
+        <div class="row">
+          <progress id="progressBar" value="0" max="100" style="width: 100%;"></progress>
+          <span class="pill deemph" id="progressInfo">Redo</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <strong class="section-title">Förhandsgranskning: det här kommer maskas</strong>
+    <div class="small deemph" style="margin-top:8px;">
+      Visar upp till 50 exempel per kategori (för att inte bli oändligt långt).
+    </div>
+
+    <div style="height:14px;"></div>
+
+    <table id="previewTable">
+      <thead>
+        <tr>
+          <th style="width: 170px;">Kategori</th>
+          <th style="width: 90px;">Antal</th>
+          <th>Exempel (sökväg + värde)</th>
+        </tr>
+      </thead>
+      <tbody id="previewBody">
+        <tr><td colspan="3" class="muted">Ingen analys ännu.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <strong class="section-title">Logg</strong>
+    <pre id="log">–</pre>
+  </div>
+
+  <div class="card tight info-block">
+    Projektet drivs av <a href="mailto:info@skogsforum.se">Skogsforum Media AB</a>.
+    Källkod: <a href="https://github.com/Fredrik-sfo/HPR-Redacter-GDPR-">GitHub</a>.
+  </div>
+
+<script>
+(() => {
+  const logEl = document.getElementById('log');
+  function log(msg) {
+    if (logEl.textContent === "–") logEl.textContent = "";
+    logEl.textContent += msg + "\n";
+  }
+  function resetLog() { logEl.textContent = "–"; }
+
+  const fileInput = document.getElementById('file');
+  const fileInfo  = document.getElementById('fileInfo');
+  const encInfo   = document.getElementById('encInfo');
+  const nsInfo    = document.getElementById('nsInfo');
+  const progressBar = document.getElementById('progressBar');
+  const progressInfo = document.getElementById('progressInfo');
+
+  const optOperators = document.getElementById('optOperators');
+  const optAuthors   = document.getElementById('optAuthors');
+  const optEmails    = document.getElementById('optEmails');
+  const optContractorSole = document.getElementById('optContractorSole');
+  const optBusinessId= document.getElementById('optBusinessId');
+  const optStyle     = document.getElementById('optStyle');
+
+  const btnAnalyze = document.getElementById('btnAnalyze');
+  const btnRedact  = document.getElementById('btnRedact');
+  const btnReport  = document.getElementById('btnReport');
+
+  const previewBody = document.getElementById('previewBody');
+
+  let currentFile = null;
+  let currentPlan = null;
+  let lastReport = null;
+  let lastBlob = null;
+  let busy = false;
+
+  const worker = createWorker();
+
+  function setProgress(phase, loaded, total) {
+    if (!total) {
+      progressBar.value = 0;
+      progressInfo.textContent = phase || "Redo";
+      return;
+    }
+    const pct = Math.min(100, Math.round((loaded / total) * 100));
+    progressBar.value = pct;
+    progressInfo.textContent = `${phase} ${pct}%`;
+  }
+
+  function setButtonsState({ hasFile=false, hasPlan=false, hasReport=false } = {}) {
+    btnAnalyze.disabled = !hasFile || busy;
+    btnRedact.disabled  = !hasFile || !hasPlan || busy;
+    btnReport.disabled  = !hasReport || busy;
+
+    const analyzeHot = hasFile && !busy;
+    const redactHot = hasFile && hasPlan && !busy;
+
+    btnAnalyze.classList.toggle("cta", analyzeHot);
+    btnAnalyze.classList.toggle("pulse", analyzeHot);
+    btnRedact.classList.toggle("cta", redactHot);
+    btnRedact.classList.toggle("pulse", redactHot);
+  }
+
+  function currentOptions() {
+    return {
+      operators: optOperators.checked,
+      authors: optAuthors.checked,
+      emails: optEmails.checked,
+      contractorSole: optContractorSole.checked,
+      businessId: optBusinessId.checked,
+      style: optStyle.value
+    };
+  }
+
+  function downloadBlob(filename, blob, mime) {
+    const outBlob = mime ? new Blob([blob], { type: mime }) : blob;
+    const url = URL.createObjectURL(outBlob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  function renderPreview(plan) {
+    const rows = [];
+    function row(label, totalCount, examples) {
+      const ex = examples.length
+        ? examples.map(e => `<div><code class="path">${escapeHtml(e.path)}</code> — <span class="muted">${escapeHtml(e.value)}</span></div>`).join("")
+        : `<span class="muted">–</span>`;
+      return `
+        <tr>
+          <td>${escapeHtml(label)}</td>
+          <td>${totalCount}</td>
+          <td>${ex}</td>
+        </tr>`;
+    }
+
+    rows.push(row("Operatör: OperatorUserID", plan.totals.operatorUserId, plan.categories.operatorUserId));
+    rows.push(row("Operatör: ContactInformation", plan.totals.operatorContact, plan.categories.operatorContact));
+    rows.push(row("Attribut: modificationAuthor", plan.totals.modificationAuthor, plan.categories.modificationAuthor));
+    rows.push(row("Mönster: e-post", plan.totals.emails, plan.categories.emails));
+    rows.push(row("Entreprenör/ägare (enskild firma): kontaktfält", plan.totals.contractorOwnerContact, plan.categories.contractorOwnerContact));
+
+    previewBody.innerHTML = rows.join("");
+  }
+
+  function escapeHtml(str) {
+    return String(str ?? "")
+      .replaceAll("&","&amp;")
+      .replaceAll("<","&lt;")
+      .replaceAll(">","&gt;")
+      .replaceAll('"',"&quot;")
+      .replaceAll("'","&#039;");
+  }
+
+  function resetPreview() {
+    previewBody.innerHTML = `<tr><td colspan="3" class="muted">Ingen analys ännu.</td></tr>`;
+  }
+
+  function createWorker() {
+    const workerCode = `
+self.onmessage = async (event) => {
+  const data = event.data || {};
+  try {
+    if (data.type === "analyze") {
+      const result = await analyzeFile(data.file, data.options, data.maxExamples || 50);
+      self.postMessage({ type: "analyze-result", plan: result.plan, encoding: result.encoding });
+      return;
+    }
+    if (data.type === "redact") {
+      const result = await redactFile(data.file, data.options, data.soleFlags, data.maxExamples || 50);
+      self.postMessage({ type: "redact-result", blob: result.blob, report: result.report, encoding: result.encoding });
+      return;
+    }
+  } catch (err) {
+    self.postMessage({ type: "error", message: String(err && err.message ? err.message : err) });
+  }
+};
+
+function postProgress(phase, loaded, total) {
+  self.postMessage({ type: "progress", phase, loaded, total });
+}
+
+function sniffEncoding(headText) {
+  const m = headText.match(/<\\?xml\\s+[^>]*encoding=["']([^"']+)["']/i);
+  return m ? m[1].toLowerCase() : "utf-8";
+}
+
+async function detectEncoding(file) {
+  const head = await file.slice(0, 512).arrayBuffer();
+  const headText = new TextDecoder("utf-8", { fatal: false }).decode(head);
+  return sniffEncoding(headText);
+}
+
+function normalizeDigits(value) {
+  return String(value || "").replace(/\\D/g, "");
+}
+
+function luhnCheck(digits) {
+  let sum = 0;
+  let shouldDouble = false;
+  for (let i = digits.length - 1; i >= 0; i--) {
+    let d = parseInt(digits[i], 10);
+    if (Number.isNaN(d)) return false;
+    if (shouldDouble) {
+      d *= 2;
+      if (d > 9) d -= 9;
+    }
+    sum += d;
+    shouldDouble = !shouldDouble;
+  }
+  return sum % 10 === 0;
+}
+
+function looksLikePersonalId(value) {
+  const digits = normalizeDigits(value);
+  if (digits.length === 12) return luhnCheck(digits.slice(2));
+  if (digits.length === 10) return luhnCheck(digits);
+  return false;
+}
+
+function isSoleProprietorData(data) {
+  const businessName = String(data.businessName || "").trim();
+  const firstName = String(data.firstName || "").trim();
+  const lastName = String(data.lastName || "").trim();
+  const businessId = String(data.businessId || "").trim();
+  const hasPersonName = !!(firstName || lastName);
+  const looksLikePersonId = looksLikePersonalId(businessId);
+  const isAB = /(^|[^A-Z\\u00c5\\u00c4\\u00d6])AB([^A-Z\\u00c5\\u00c4\\u00d6]|$)/i.test(businessName) || /aktiebolag/i.test(businessName);
+  if (looksLikePersonId) return true;
+  if (hasPersonName && !isAB) return true;
+  return false;
+}
+
+function clip(s, n) {
+  const max = n || 120;
+  let out = String(s || "");
+  out = out.replace(/\\s+/g, " ").trim();
+  return out.length > max ? out.slice(0, max - 1) + "…" : out;
+}
+
+function findTagEnd(text) {
+  let quote = null;
+  for (let i = 1; i < text.length; i++) {
+    const ch = text[i];
+    if (quote) {
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+    } else if (ch === ">") {
+      return i;
+    }
+  }
+  return -1;
+}
+
+function parseTag(tagText) {
+  const isEnd = tagText.startsWith("</");
+  const isSelfClosing = !isEnd && /\\/\\s*>$/.test(tagText);
+  const inner = tagText.slice(isEnd ? 2 : 1, tagText.length - 1).trim();
+  const spaceIdx = inner.search(/\\s/);
+  const name = spaceIdx === -1 ? inner : inner.slice(0, spaceIdx);
+  const rest = spaceIdx === -1 ? "" : inner.slice(spaceIdx).trim();
+  const attrs = [];
+  if (!isEnd && rest) {
+    let i = 0;
+    while (i < rest.length) {
+      while (i < rest.length && /\\s/.test(rest[i])) i++;
+      if (i >= rest.length) break;
+      let start = i;
+      while (i < rest.length && !/\\s|=/.test(rest[i])) i++;
+      const attrName = rest.slice(start, i);
+      while (i < rest.length && /\\s/.test(rest[i])) i++;
+      if (rest[i] !== "=") {
+        attrs.push({ name: attrName, value: null, quote: '"' });
+        continue;
+      }
+      i++;
+      while (i < rest.length && /\\s/.test(rest[i])) i++;
+      const quote = rest[i] === "'" ? "'" : '"';
+      if (rest[i] === "'" || rest[i] === '"') i++;
+      let valStart = i;
+      while (i < rest.length && rest[i] !== quote) i++;
+      const value = rest.slice(valStart, i);
+      if (rest[i] === quote) i++;
+      attrs.push({ name: attrName, value, quote });
+    }
+  }
+  const localName = name.includes(":") ? name.split(":").pop() : name;
+  return { isEnd, isSelfClosing, name, localName, attrs };
+}
+
+function buildTag(tag, attrs, isSelfClosing) {
+  let out = "<" + tag;
+  for (const a of attrs) {
+    if (a.value === null) {
+      out += " " + a.name;
+    } else {
+      out += " " + a.name + "=" + a.quote + a.value + a.quote;
+    }
+  }
+  out += isSelfClosing ? " />" : ">";
+  return out;
+}
+
+function blockKeyFromLocal(nameLower) {
+  if (nameLower === "machineowner") return "MachineOwner";
+  if (nameLower === "loggingcontractor") return "LoggingContractor";
+  return "";
+}
+
+function isContactFieldName(nameLower, includeBusinessId) {
+  if (includeBusinessId && nameLower === "businessid") return true;
+  return [
+    "firstname","lastname","email","phone","fax","businessname",
+    "street","city","province","zipcode","country"
+  ].includes(nameLower);
+}
+
+function createState(options, mode, maxExamples, soleFlags) {
+  return {
+    options,
+    mode,
+    maxExamples,
+    stack: [],
+    operatorDefDepth: 0,
+    operatorUserIdDepth: 0,
+    contactInfoDepth: 0,
+    contactFieldDepth: 0,
+    contactFieldName: null,
+    soleFlags: soleFlags || { MachineOwner: [], LoggingContractor: [] },
+    soleIndex: { MachineOwner: 0, LoggingContractor: 0 },
+    blockScanStack: [],
+    blockFieldName: null,
+    blockStack: [],
+    plan: {
+      meta: { options, generatedAt: new Date().toISOString() },
+      categories: {
+        operatorUserId: [],
+        operatorContact: [],
+        modificationAuthor: [],
+        emails: [],
+        contractorOwnerContact: []
+      },
+      totals: {
+        operatorUserId: 0,
+        operatorContact: 0,
+        modificationAuthor: 0,
+        emails: 0,
+        contractorOwnerContact: 0
+      },
+      soleFlags: { MachineOwner: [], LoggingContractor: [] }
+    },
+    report: {
+      meta: { options, redactedAt: new Date().toISOString(), outputEncoding: "utf-8" },
+      summary: { totalChanges: 0, byKind: {} },
+      changes: [],
+      note: "changes list is capped at 2000 entries"
+    }
+  };
+}
+
+function addExample(list, maxExamples, entry) {
+  if (list.length < maxExamples) list.push(entry);
+}
+
+function recordChange(state, kind, path, before, after) {
+  state.report.summary.totalChanges++;
+  state.report.summary.byKind[kind] = (state.report.summary.byKind[kind] || 0) + 1;
+  if (state.report.changes.length < 2000) {
+    state.report.changes.push({
+      kind,
+      path,
+      before: clip(before, 200),
+      after: clip(after, 200)
+    });
+  }
+}
+
+function enterElement(state, localName, rawName) {
+  const parent = state.stack[state.stack.length - 1];
+  let index = 1;
+  if (parent) {
+    parent.childCounts[localName] = (parent.childCounts[localName] || 0) + 1;
+    index = parent.childCounts[localName];
+  }
+  const node = { localName, rawName, index, childCounts: {} };
+  state.stack.push(node);
+  const nameLower = localName.toLowerCase();
+  if (nameLower === "operatordefinition") state.operatorDefDepth++;
+  if (nameLower === "operatoruserid") state.operatorUserIdDepth++;
+  if (nameLower === "contactinformation" && state.operatorDefDepth > 0) state.contactInfoDepth++;
+
+  const blockKey = blockKeyFromLocal(nameLower);
+  if (blockKey && state.mode === "analyze") {
+    state.blockScanStack.push({
+      type: blockKey,
+      businessName: "",
+      businessId: "",
+      firstName: "",
+      lastName: "",
+      contactCount: 0,
+      contactExamples: []
+    });
+  }
+  if (blockKey && state.mode === "redact") {
+    const idx = state.soleIndex[blockKey]++;
+    const redact = !!(state.soleFlags[blockKey] && state.soleFlags[blockKey][idx]);
+    state.blockStack.push({ type: blockKey, redact });
+  }
+}
+
+function exitElement(state, localName) {
+  const node = state.stack.pop();
+  const nameLower = (node && node.localName ? node.localName : localName).toLowerCase();
+  if (nameLower === "operatordefinition") state.operatorDefDepth--;
+  if (nameLower === "operatoruserid") state.operatorUserIdDepth--;
+  if (nameLower === "contactinformation" && state.operatorDefDepth >= 0) state.contactInfoDepth--;
+  if (state.contactFieldDepth > 0 && state.contactFieldName && state.contactFieldName === nameLower) {
+    state.contactFieldDepth--;
+    if (state.contactFieldDepth === 0) state.contactFieldName = null;
+  }
+
+  const blockKey = blockKeyFromLocal(nameLower);
+  if (blockKey && state.mode === "analyze") {
+    const block = state.blockScanStack.pop();
+    if (block) {
+      const isSole = isSoleProprietorData(block);
+      state.plan.soleFlags[block.type].push(isSole);
+      if (isSole && block.contactCount) {
+        state.plan.totals.contractorOwnerContact += block.contactCount;
+        for (const ex of block.contactExamples) {
+          addExample(state.plan.categories.contractorOwnerContact, state.maxExamples, ex);
+        }
+      }
+    }
+  }
+  if (blockKey && state.mode === "redact") {
+    state.blockStack.pop();
+  }
+}
+
+function currentPath(state) {
+  if (!state.stack.length) return "/";
+  const parts = state.stack.map(n => (n.rawName || n.localName) + "[" + n.index + "]");
+  return "/" + parts.join("/");
+}
+
+async function streamParse(file, encoding, handlers, phase) {
+  const reader = file.stream().getReader();
+  const decoder = new TextDecoder(encoding, { fatal: false });
+  let buffer = "";
+  let loaded = 0;
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    loaded += value.byteLength;
+    buffer += decoder.decode(value, { stream: true });
+    buffer = processBuffer(buffer, handlers);
+    if (phase) postProgress(phase, loaded, file.size);
+  }
+  buffer += decoder.decode();
+  buffer = processBuffer(buffer, handlers, true);
+  if (buffer) handlers.onText(buffer);
+  if (phase) postProgress(phase, file.size, file.size);
+}
+
+function processBuffer(buffer, handlers, isFinal) {
+  while (buffer.length) {
+    const lt = buffer.indexOf("<");
+    if (lt === -1) {
+      handlers.onText(buffer);
+      return "";
+    }
+    if (lt > 0) {
+      handlers.onText(buffer.slice(0, lt));
+      buffer = buffer.slice(lt);
+      continue;
+    }
+    if (buffer.startsWith("<!--")) {
+      const end = buffer.indexOf("-->");
+      if (end === -1) return buffer;
+      handlers.onRaw(buffer.slice(0, end + 3));
+      buffer = buffer.slice(end + 3);
+      continue;
+    }
+    if (buffer.startsWith("<![CDATA[")) {
+      const end = buffer.indexOf("]]>");
+      if (end === -1) return buffer;
+      handlers.onRaw(buffer.slice(0, end + 3));
+      buffer = buffer.slice(end + 3);
+      continue;
+    }
+    if (buffer.startsWith("<?")) {
+      const end = buffer.indexOf("?>");
+      if (end === -1) return buffer;
+      handlers.onRaw(buffer.slice(0, end + 2));
+      buffer = buffer.slice(end + 2);
+      continue;
+    }
+    if (buffer.startsWith("<!")) {
+      const end = findTagEnd(buffer);
+      if (end === -1) return buffer;
+      handlers.onRaw(buffer.slice(0, end + 1));
+      buffer = buffer.slice(end + 1);
+      continue;
+    }
+    const end = findTagEnd(buffer);
+    if (end === -1) return buffer;
+    handlers.onTag(buffer.slice(0, end + 1));
+    buffer = buffer.slice(end + 1);
+  }
+  return buffer;
+}
+
+async function analyzeFile(file, options, maxExamples) {
+  const encoding = await detectEncoding(file);
+  const state = createState(options, "analyze", maxExamples);
+
+  const handlers = {
+    onRaw: () => {},
+    onTag: (tagText) => {
+      const tag = parseTag(tagText);
+      const local = tag.localName || tag.name || "";
+      if (tag.isEnd) {
+        exitElement(state, local);
+        return;
+      }
+      enterElement(state, local, tag.name);
+
+      if (options.authors && tag.attrs && tag.attrs.length) {
+        for (const attr of tag.attrs) {
+          if (attr.name === "modificationAuthor" && attr.value && attr.value.trim()) {
+            state.plan.totals.modificationAuthor++;
+            addExample(state.plan.categories.modificationAuthor, maxExamples, {
+              path: currentPath(state) + "/@modificationAuthor",
+              value: clip(attr.value),
+              action: "remove-attribute"
+            });
+          }
+        }
+      }
+
+      if (tag.isSelfClosing) exitElement(state, local);
+    },
+    onText: (text) => {
+      const trimmed = text.trim();
+      if (!trimmed) return;
+      if (options.operators && state.operatorUserIdDepth > 0) {
+        state.plan.totals.operatorUserId++;
+        addExample(state.plan.categories.operatorUserId, maxExamples, {
+          path: currentPath(state),
+          value: clip(text),
+          action: options.style
+        });
+        return;
+      }
+      if (options.operators && state.contactInfoDepth > 0) {
+        state.plan.totals.operatorContact++;
+        addExample(state.plan.categories.operatorContact, maxExamples, {
+          path: currentPath(state),
+          value: clip(text),
+          action: options.style
+        });
+        return;
+      }
+
+      const currentBlock = state.blockScanStack[state.blockScanStack.length - 1];
+      if (currentBlock) {
+        const nameLower = state.stack.length ? state.stack[state.stack.length - 1].localName.toLowerCase() : "";
+        if (nameLower === "businessname") currentBlock.businessName += text;
+        if (nameLower === "businessid") currentBlock.businessId += text;
+        if (nameLower === "firstname") currentBlock.firstName += text;
+        if (nameLower === "lastname") currentBlock.lastName += text;
+        if (isContactFieldName(nameLower, options.businessId)) {
+          currentBlock.contactCount++;
+          addExample(currentBlock.contactExamples, maxExamples, {
+            path: currentPath(state),
+            value: clip(text),
+            action: options.style
+          });
+        }
+      }
+
+      if (options.emails) {
+        const re = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}/ig;
+        const matches = text.match(re);
+        if (matches && matches.length) {
+          state.plan.totals.emails += matches.length;
+          for (const m of matches.slice(0, 2)) {
+            addExample(state.plan.categories.emails, maxExamples, {
+              path: currentPath(state),
+              value: clip(m),
+              action: "replace-with-[REDACTED_EMAIL]"
+            });
+          }
+        }
+      }
+    }
+  };
+
+  await streamParse(file, encoding, handlers, "Analyserar");
+  state.plan.meta.encoding = encoding;
+  return { plan: state.plan, encoding };
+}
+
+async function scanSoleFlags(file, options) {
+  const encoding = await detectEncoding(file);
+  const state = createState(options, "analyze", 0);
+  const handlers = {
+    onRaw: () => {},
+    onTag: (tagText) => {
+      const tag = parseTag(tagText);
+      const local = tag.localName || tag.name || "";
+      if (tag.isEnd) {
+        exitElement(state, local);
+        return;
+      }
+      enterElement(state, local, tag.name);
+      if (tag.isSelfClosing) exitElement(state, local);
+    },
+    onText: (text) => {
+      const trimmed = text.trim();
+      if (!trimmed) return;
+      const currentBlock = state.blockScanStack[state.blockScanStack.length - 1];
+      if (!currentBlock) return;
+      const nameLower = state.stack.length ? state.stack[state.stack.length - 1].localName.toLowerCase() : "";
+      if (nameLower === "businessname") currentBlock.businessName += text;
+      if (nameLower === "businessid") currentBlock.businessId += text;
+      if (nameLower === "firstname") currentBlock.firstName += text;
+      if (nameLower === "lastname") currentBlock.lastName += text;
+    }
+  };
+  await streamParse(file, encoding, handlers, "Skannar");
+  return { soleFlags: state.plan.soleFlags, encoding };
+}
+
+async function redactFile(file, options, soleFlags, maxExamples) {
+  let flags = soleFlags;
+  let encoding = await detectEncoding(file);
+  if (!flags || !flags.MachineOwner) {
+    const scan = await scanSoleFlags(file, options);
+    flags = scan.soleFlags;
+    encoding = scan.encoding;
+  }
+  const state = createState(options, "redact", maxExamples, flags);
+  const replacement = options.style === "redacted" ? "[REDACTED]" : "";
+  const output = [];
+
+  const handlers = {
+    onRaw: (text) => output.push(text),
+    onTag: (tagText) => {
+      const tag = parseTag(tagText);
+      const local = tag.localName || tag.name || "";
+      if (tag.isEnd) {
+        exitElement(state, local);
+        output.push(tagText);
+        return;
+      }
+
+      enterElement(state, local, tag.name);
+      let outTag = tagText;
+      if (options.authors && tag.attrs && tag.attrs.length) {
+        const kept = [];
+        for (const attr of tag.attrs) {
+          if (attr.name === "modificationAuthor") {
+            if (attr.value && attr.value.trim()) {
+              recordChange(state, "ModificationAuthorAttr", currentPath(state) + "/@modificationAuthor", attr.value, "(attribut borttaget)");
+            }
+            continue;
+          }
+          kept.push(attr);
+        }
+        if (kept.length !== tag.attrs.length) {
+          outTag = buildTag(tag.name, kept, tag.isSelfClosing);
+        }
+      }
+      output.push(outTag);
+      if (tag.isSelfClosing) exitElement(state, local);
+    },
+    onText: (text) => {
+      const trimmed = text.trim();
+      if (!trimmed) {
+        output.push(text);
+        return;
+      }
+      const path = currentPath(state);
+      const nameLower = state.stack.length ? state.stack[state.stack.length - 1].localName.toLowerCase() : "";
+      const currentBlock = state.blockStack[state.blockStack.length - 1];
+
+      if (options.operators && state.operatorUserIdDepth > 0) {
+        recordChange(state, "OperatorUserID", path, text, replacement);
+        output.push(replacement);
+        return;
+      }
+      if (options.operators && state.contactInfoDepth > 0) {
+        recordChange(state, "OperatorContact", path, text, replacement);
+        output.push(replacement);
+        return;
+      }
+      if (options.contractorSole && currentBlock && currentBlock.redact && isContactFieldName(nameLower, options.businessId)) {
+        recordChange(state, currentBlock.type + ":" + nameLower, path, text, replacement);
+        output.push(replacement);
+        return;
+      }
+
+      if (options.emails) {
+        const emailRe = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}/ig;
+        if (emailRe.test(text)) {
+          const after = text.replace(emailRe, "[REDACTED_EMAIL]");
+          recordChange(state, "EmailPattern", path, text, after);
+          output.push(after);
+          return;
+        }
+      }
+      output.push(text);
+    }
+  };
+
+  await streamParse(file, encoding, handlers, "Maskar");
+  const blob = new Blob(output, { type: "application/xml;charset=utf-8" });
+  return { blob, report: state.report, encoding };
+}
+`;
+    const blob = new Blob([workerCode], { type: "application/javascript" });
+    return new Worker(URL.createObjectURL(blob));
+  }
+
+  worker.onmessage = (event) => {
+    const data = event.data || {};
+    if (data.type === "progress") {
+      setProgress(data.phase, data.loaded, data.total);
+      return;
+    }
+    if (data.type === "error") {
+      busy = false;
+      setButtonsState({ hasFile: !!currentFile, hasPlan: !!currentPlan, hasReport: !!lastReport });
+      setProgress("Fel", 0, 0);
+      log("Fel: " + data.message);
+      return;
+    }
+    if (data.type === "analyze-result") {
+      busy = false;
+      currentPlan = data.plan;
+      encInfo.textContent = "Encoding: " + (data.encoding || "utf-8");
+      nsInfo.textContent = "Namespace: (streaming-parser)";
+      renderPreview(currentPlan);
+      log("Analys klar.");
+      log("Planerade träffar: " +
+        "OperatorUserID=" + currentPlan.totals.operatorUserId + ", " +
+        "OperatorContact=" + currentPlan.totals.operatorContact + ", " +
+        "modificationAuthor=" + currentPlan.totals.modificationAuthor + ", " +
+        "emails=" + currentPlan.totals.emails + ", " +
+        "entreprenör/ägare=" + currentPlan.totals.contractorOwnerContact
+      );
+      setButtonsState({ hasFile: !!currentFile, hasPlan: !!currentPlan, hasReport: !!lastReport });
+      setProgress("Redo", 0, 0);
+      return;
+    }
+    if (data.type === "redact-result") {
+      busy = false;
+      lastReport = data.report;
+      lastBlob = data.blob;
+      encInfo.textContent = "Encoding: " + (data.encoding || "utf-8");
+      const outName = currentFile.name.replace(/(\\.[^.]+)?$/, ".redacted$1");
+      downloadBlob(outName, lastBlob, "application/xml;charset=utf-8");
+      log("Rensad fil skapad.");
+      log("Ändringar (antal): " + (lastReport.summary && lastReport.summary.totalChanges));
+      log("Tips: klicka 'Spara rapport (JSON)' för att spara bevis på vad som ändrades.");
+      setButtonsState({ hasFile: !!currentFile, hasPlan: !!currentPlan, hasReport: !!lastReport });
+      setProgress("Redo", 0, 0);
+      return;
+    }
+  };
+
+  fileInput.addEventListener('change', () => {
+    resetLog();
+    currentPlan = null;
+    lastReport = null;
+    lastBlob = null;
+    currentFile = fileInput.files?.[0] || null;
+    if (!currentFile) {
+      fileInfo.textContent = "Ingen fil vald";
+      encInfo.textContent = "Encoding: –";
+      nsInfo.textContent = "Namespace: –";
+      resetPreview();
+      setButtonsState({ hasFile: false, hasPlan: false, hasReport: false });
+      setProgress("Redo", 0, 0);
+      return;
+    }
+    fileInfo.textContent = currentFile.name + " (" + currentFile.size.toLocaleString("sv-SE") + " bytes)";
+    encInfo.textContent = "Encoding: (okänd, analyseras)";
+    nsInfo.textContent = "Namespace: (streaming-parser)";
+    resetPreview();
+    setButtonsState({ hasFile: true, hasPlan: false, hasReport: false });
+    setProgress("Redo", 0, 0);
+    log("Fil laddad. Klicka 'Analysera' för förhandsgranskning.");
+  });
+
+  btnAnalyze.addEventListener('click', () => {
+    if (!currentFile || busy) return;
+    resetLog();
+    busy = true;
+    setButtonsState({ hasFile: !!currentFile, hasPlan: !!currentPlan, hasReport: !!lastReport });
+    worker.postMessage({
+      type: "analyze",
+      file: currentFile,
+      options: currentOptions(),
+      maxExamples: 50
+    });
+  });
+
+  btnRedact.addEventListener('click', () => {
+    if (!currentFile || busy) return;
+    resetLog();
+    busy = true;
+    setButtonsState({ hasFile: !!currentFile, hasPlan: !!currentPlan, hasReport: !!lastReport });
+    worker.postMessage({
+      type: "redact",
+      file: currentFile,
+      options: currentOptions(),
+      soleFlags: currentPlan ? currentPlan.soleFlags : null,
+      maxExamples: 50
+    });
+  });
+
+  btnReport.addEventListener('click', () => {
+    if (!lastReport) return;
+    const reportName = currentFile.name.replace(/(\\.[^.]+)?$/, ".redaction-report.json");
+    const blob = new Blob([JSON.stringify(lastReport, null, 2)], { type: "application/json;charset=utf-8" });
+    downloadBlob(reportName, blob);
+    resetLog();
+    log("Rapport sparad.");
+  });
+})();
+
+</script>
+</body>
+</html>
